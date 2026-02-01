@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>情感分析 API 测试</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background-image: url('背景.png');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            background-repeat: no-repeat;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 32px;
+        }
+        
+        .input-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 10px;
+            color: #333;
+            font-weight: bold;
+        }
+        
+        textarea {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .result.positive {
+            background: #d4edda;
+            border: 2px solid #28a745;
+            display: block;
+        }
+        
+        .result.negative {
+            background: #f8d7da;
+            border: 2px solid #dc3545;
+            display: block;
+        }
+        
+        .result h2 {
+            margin-bottom: 15px;
+            font-size: 24px;
+        }
+        
+        .result.positive h2 {
+            color: #28a745;
+        }
+        
+        .result.negative h2 {
+            color: #dc3545;
+        }
+        
+        .result p {
+            margin: 10px 0;
+            font-size: 16px;
+            color: #333;
+        }
+        
+        .emoji {
+            font-size: 48px;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        
+        .error {
+            background: #f8d7da;
+            border: 2px solid #dc3545;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .loading {
+            text-align: center;
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .loading::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 情感分析 API</h1>
+        
+        <div class="input-group">
+            <label for="textInput">输入要分析的文本：</label>
+            <textarea id="textInput" placeholder="例如：这个产品质量很好，非常满意！"></textarea>
+        </div>
+        
+        <button id="analyzeBtn" onclick="analyze()">分析情感</button>
+        
+        <div class="loading" id="loading">正在分析</div>
+        
+        <div class="result" id="result">
+            <div class="emoji" id="emoji"></div>
+            <h2 id="sentiment"></h2>
+            <p><strong>置信度：</strong><span id="confidence"></span></p>
+            <p><strong>详细概率：</strong></p>
+            <p>正面：<span id="positive"></span></p>
+            <p>负面：<span id="negative"></span></p>
+        </div>
+        
+        <div class="error" id="error"></div>
+    </div>
+    
+    <script>
+        const API_URL = 'http://localhost:5000';
+        
+        async function analyze() {
+            const text = document.getElementById('textInput').value.trim();
+            const resultDiv = document.getElementById('result');
+            const errorDiv = document.getElementById('error');
+            const loadingDiv = document.getElementById('loading');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            
+            // 隐藏之前的结果
+            resultDiv.style.display = 'none';
+            errorDiv.style.display = 'none';
+            resultDiv.className = 'result';
+            
+            // 验证输入
+            if (!text) {
+                errorDiv.textContent = '⚠️ 请输入要分析的文本';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            // 显示加载状态
+            loadingDiv.style.display = 'block';
+            analyzeBtn.disabled = true;
+            
+            try {
+                const response = await fetch(`${API_URL}/predict`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        use_pipeline: false
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // 显示结果
+                const isPositive = data.sentiment === '正面';
+                resultDiv.className = `result ${isPositive ? 'positive' : 'negative'}`;
+                
+                document.getElementById('emoji').textContent = isPositive ? '😊' : '😞';
+                document.getElementById('sentiment').textContent = data.sentiment;
+                document.getElementById('confidence').textContent = (data.confidence * 100).toFixed(2) + '%';
+                document.getElementById('positive').textContent = (data.probabilities.positive * 100).toFixed(2) + '%';
+                document.getElementById('negative').textContent = (data.probabilities.negative * 100).toFixed(2) + '%';
+                
+                resultDiv.style.display = 'block';
+                
+            } catch (error) {
+                errorDiv.textContent = `❌ 错误: ${error.message}\n\n请确保 API 服务已启动（运行 模型部署示例.py）`;
+                errorDiv.style.display = 'block';
+            } finally {
+                loadingDiv.style.display = 'none';
+                analyzeBtn.disabled = false;
+            }
+        }
+        
+        // 支持回车键提交
+        document.getElementById('textInput').addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                analyze();
+            }
+        });
+    </script>
+</body>
+</html>
