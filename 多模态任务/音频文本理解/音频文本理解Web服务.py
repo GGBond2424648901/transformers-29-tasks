@@ -8,9 +8,26 @@ import os
 os.environ['HF_HOME'] = r'D:\transformers训练\transformers-main\预训练模型下载处'
 os.environ['TRANSFORMERS_CACHE'] = r'D:\transformers训练\transformers-main\预训练模型下载处'
 
+# 添加 ffmpeg 到 PATH
+ffmpeg_path = r'D:\transformers训练\transformers-main\预训练模型下载处\ffmpeg-2026-02-04-git-627da1111c-essentials_build\bin'
+if ffmpeg_path not in os.environ['PATH']:
+    os.environ['PATH'] = ffmpeg_path + os.pathsep + os.environ['PATH']
+    print(f"✅ 已添加 ffmpeg 到 PATH: {ffmpeg_path}")
+
 from flask import Flask, request, jsonify, render_template_string, send_file
 from transformers import pipeline
 import base64
+
+# 导入翻译库
+try:
+    from googletrans import Translator
+    TRANSLATOR_AVAILABLE = True
+    translator = Translator()
+    print("✅ Google翻译支持已启用")
+except ImportError:
+    TRANSLATOR_AVAILABLE = False
+    translator = None
+    print("⚠️  未安装 googletrans，翻译功能不可用")
 
 app = Flask(__name__)
 
@@ -23,8 +40,18 @@ print("=" * 70)
 
 print("\n🎙️ 正在加载语音识别模型...")
 asr = pipeline("automatic-speech-recognition", model="openai/whisper-base")
-print("\n📝 正在加载文本分类模型...")
-classifier = pipeline("text-classification", model="bert-base-chinese")
+print("✅ 使用 whisper-base 模型（支持中文识别）")
+
+print("\n📝 正在加载中文情感分析模型...")
+# 使用已训练好的中文情感分析模型
+try:
+    classifier = pipeline("text-classification", model="uer/roberta-base-finetuned-dianping-chinese")
+    print("✅ 使用 RoBERTa 中文情感分析模型")
+except:
+    # 如果上面的模型加载失败，使用备用方案
+    print("⚠️  使用基础情感分析（需要训练）")
+    classifier = pipeline("text-classification", model="bert-base-chinese")
+
 print("✅ 音频解析师准备完毕！")
 
 HTML_TEMPLATE = """
@@ -355,8 +382,10 @@ HTML_TEMPLATE = """
             
             if (data.classification) {
                 html += '<div class="result-box">';
-                html += '<div class="result-title">📊 文本分类：</div>';
-                html += `<div class="result-content">类别: ${data.classification.label} (${(data.classification.score * 100).toFixed(1)}%)</div>`;
+                html += '<div class="result-title">📊 情感分析：</div>';
+                const label = data.classification.label_cn || '积极';
+                const score = (data.classification.score * 100).toFixed(1);
+                html += `<div class="result-content">情感: ${label} (置信度: ${score}%)</div>`;
                 html += '</div>';
             }
             
@@ -393,16 +422,56 @@ def analyze():
             file.save(tmp.name)
             tmp_path = tmp.name
         
-        # 语音识别
-        transcription_result = asr(tmp_path)
+        # 语音识别 - 强制使用中文
+        # generate_kwargs 可以指定语言，提高中文识别准确率
+        transcription_result = asr(tmp_path, generate_kwargs={"language": "chinese"})
         transcription = transcription_result['text']
+        transcription_cn = transcription  # 默认使用原文
         
-        # 文本分类（可选）
+        # 如果识别结果是英文，翻译成中文
+        if TRANSLATOR_AVAILABLE:
+            try:
+                # 检测语言
+                detected = translator.detect(transcription)
+                print(f"检测到语言: {detected.lang}")
+                
+                # 如果不是中文，翻译成中文
+                if detected.lang != 'zh-cn' and detected.lang != 'zh':
+                    print(f"原文: {transcription}")
+                    translated = translator.translate(transcription, src='auto', dest='zh-cn')
+                    transcription_cn = translated.text
+                    print(f"翻译: {transcription_cn}")
+            except Exception as e:
+                print(f"翻译失败: {e}")
+                transcription_cn = transcription
+        
+        # 文本分类（情感分析）- 使用中文文本
         classification = None
         try:
-            classification_result = classifier(transcription)
+            classification_result = classifier(transcription_cn)
             classification = classification_result[0]
-        except:
+            
+            # 翻译情感标签为中文
+            sentiment_map = {
+                'positive': '积极',
+                'negative': '消极',
+                'neutral': '中性',
+                'POSITIVE': '积极',
+                'NEGATIVE': '消极',
+                'NEUTRAL': '中性',
+                'LABEL_0': '消极',
+                'LABEL_1': '积极',
+                'LABEL_2': '中性',
+            }
+            
+            if 'label' in classification:
+                original_label = classification['label']
+                # 清理标签文本，只保留主要情感词
+                clean_label = original_label.split('(')[0].strip()
+                classification['label_cn'] = sentiment_map.get(clean_label, sentiment_map.get(original_label, '积极'))
+                classification['label_en'] = original_label
+        except Exception as e:
+            print(f"情感分析失败: {e}")
             pass
         
         # 删除临时文件
@@ -410,7 +479,8 @@ def analyze():
         
         return jsonify({
             'success': True,
-            'transcription': transcription,
+            'transcription': transcription_cn,  # 返回中文翻译
+            'transcription_original': transcription,  # 保留原文（可选）
             'classification': classification
         })
         

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-表格问答示例
-对结构化表格数据进行问答
+表格问答示例 - 命令行版本
+绕过Web服务，直接使用transformers pipeline
 """
 
 import os
@@ -12,75 +12,85 @@ os.environ['TRANSFORMERS_CACHE'] = r'D:\transformers训练\transformers-main\预
 from transformers import pipeline
 import pandas as pd
 
+# 获取当前脚本所在目录
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 print("=" * 70)
-print("📊💬 表格问答示例")
+print("📊 表格问答示例 - 命令行版本")
 print("=" * 70)
 
-# 创建表格问答 pipeline
+# 加载模型
+print("\n📚 正在加载表格问答模型...")
 table_qa = pipeline("table-question-answering", model="google/tapas-base-finetuned-wtq")
+print("✅ 模型加载完成！")
 
-print("✅ 模型加载成功！")
+# 示例1：英文表格（推荐）
+print("\n" + "=" * 70)
+print("示例1：销售数据表格（英文）")
+print("=" * 70)
 
-# 创建示例表格
-table = pd.DataFrame({
-    "姓名": ["张三", "李四", "王五"],
-    "年龄": [25, 30, 28],
-    "部门": ["技术部", "销售部", "技术部"],
-    "工资": [8000, 9000, 8500]
-})
-
-print("\n📊 示例表格：")
-print(table)
+# 读取CSV文件 - 使用绝对路径
+csv_path = os.path.join(CURRENT_DIR, "销售数据测试.csv")
+df_sales = pd.read_csv(csv_path)
+print("\n表格内容：")
+print(df_sales)
 
 # 提问
 questions = [
-    "技术部有多少人？",
-    "谁的工资最高？",
-    "平均工资是多少？"
+    "How many laptops were sold?",
+    "What is the total revenue?",
+    "Which product sold the most in January?"
 ]
 
-print("\n🤔 开始提问：\n")
-
 for question in questions:
-    result = table_qa(table=table, query=question)
-    print(f"Q: {question}")
-    print(f"A: {result['answer']}\n")
+    print(f"\n❓ 问题: {question}")
+    try:
+        result = table_qa(table=df_sales, query=question)
+        print(f"💡 答案: {result['answer']}")
+        if 'coordinates' in result:
+            print(f"📍 位置: {result['coordinates']}")
+        if 'cells' in result:
+            print(f"📋 相关单元格: {result['cells']}")
+    except Exception as e:
+        print(f"❌ 错误: {e}")
 
-print("""
-应用场景：
-- 📊 数据分析 - 自然语言查询数据
-- 💼 财务报表 - 快速查找信息
-- 📈 业务报告 - 智能问答
-- 🏢 企业数据 - 员工信息查询
+# 示例2：简单的员工表格
+print("\n" + "=" * 70)
+print("示例2：员工信息表格（简化版）")
+print("=" * 70)
 
-使用技巧：
-1. 表格需要是 pandas DataFrame 格式
-2. 问题要与表格内容相关
-3. 支持聚合查询（求和、平均等）
+# 创建简单的DataFrame（避免复杂的中文处理）
+data = {
+    "Name": ["Zhang San", "Li Si", "Wang Wu", "Zhao Liu"],
+    "Age": ["25", "30", "28", "35"],
+    "Department": ["Tech", "Sales", "Tech", "Management"],
+    "Salary": ["8000", "9000", "8500", "12000"]
+}
 
-推荐模型：
-- google/tapas-base-finetuned-wtq: 通用表格问答
-- microsoft/tapex-large: 更强大的模型
-- neulab/omnitab-large: 支持复杂查询
-
-示例代码：
-```python
-import pandas as pd
-
-# 创建表格
-table = pd.DataFrame({
-    "产品": ["A", "B", "C"],
-    "销量": [100, 200, 150],
-    "价格": [10, 20, 15]
-})
+df_employees = pd.DataFrame(data)
+print("\n表格内容：")
+print(df_employees)
 
 # 提问
-result = table_qa(
-    table=table,
-    query="哪个产品销量最高？"
-)
-print(result['answer'])
-```
-""")
+questions = [
+    "How many people work in Tech?",
+    "What is the average salary?",
+    "Who has the highest salary?"
+]
 
-print("\n✨ 示例完成！")
+for question in questions:
+    print(f"\n❓ 问题: {question}")
+    try:
+        result = table_qa(table=df_employees, query=question)
+        print(f"💡 答案: {result['answer']}")
+    except Exception as e:
+        print(f"❌ 错误: {e}")
+
+print("\n" + "=" * 70)
+print("✅ 示例运行完成！")
+print("=" * 70)
+print("\n💡 提示：")
+print("1. TAPAS模型主要为英文表格设计，英文问题效果最好")
+print("2. 表格数据建议使用英文，避免编码问题")
+print("3. 问题要具体明确，避免过于复杂的查询")
+print("4. 如需处理中文表格，建议先翻译成英文")

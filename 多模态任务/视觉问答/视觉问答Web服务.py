@@ -14,10 +14,46 @@ from PIL import Image
 import base64
 import io
 
+# 导入翻译库
+try:
+    from googletrans import Translator
+    TRANSLATOR_AVAILABLE = True
+    translator = Translator()
+    print("✅ Google翻译支持已启用")
+except ImportError:
+    TRANSLATOR_AVAILABLE = False
+    translator = None
+    print("⚠️  未安装 googletrans，中文翻译不可用")
+    print("   安装命令: pip install googletrans==4.0.0-rc1")
+
 app = Flask(__name__)
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKGROUND_PATH = os.path.join(CURRENT_DIR, '背景.png')
+
+# 常见中文问题的直接映射（避免翻译错误）
+QUESTION_MAPPING = {
+    '图中有什么？': 'What is in the image?',
+    '图中有什么': 'What is in the image?',
+    '这是什么？': 'What is this?',
+    '这是什么': 'What is this?',
+    '有多少人？': 'How many people are in the image?',
+    '有多少人': 'How many people are in the image?',
+    '多少人？': 'How many people are in the image?',
+    '多少人': 'How many people are in the image?',
+    '这是什么颜色？': 'What color is this?',
+    '这是什么颜色': 'What color is this?',
+    '什么颜色？': 'What color is it?',
+    '什么颜色': 'What color is it?',
+    '这是在哪里？': 'Where is this?',
+    '这是在哪里': 'Where is this?',
+    '在哪里？': 'Where is this?',
+    '在哪里': 'Where is this?',
+    '他们在做什么？': 'What are they doing?',
+    '他们在做什么': 'What are they doing?',
+    '在做什么？': 'What are they doing?',
+    '在做什么': 'What are they doing?',
+}
 
 print("=" * 70)
 print("👁️ 视觉问答 Web 服务 - 视觉智者")
@@ -317,7 +353,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <h1>👁️ 视觉问答</h1>
-        <p class="subtitle">视觉智者帮你理解图像内容！</p>
+        <p class="subtitle">视觉智者帮你理解图像内容！支持中英文提问 🌏</p>
         
         <div class="upload-section">
             <div class="upload-area" id="uploadArea">
@@ -331,13 +367,14 @@ HTML_TEMPLATE = """
                 <img id="previewImage" class="preview-image" alt="图片预览">
                 
                 <div class="question-area">
-                    <label>❓ 向图片提问（英文）：</label>
-                    <input type="text" id="questionInput" placeholder="例如：What is in the image?">
+                    <label>❓ 向图片提问（支持中英文）：</label>
+                    <input type="text" id="questionInput" placeholder="例如：图中有什么？或 What is in the image?">
                     <div class="quick-questions">
-                        <button class="quick-btn" onclick="setQuestion('What is in the image?')">图中有什么</button>
-                        <button class="quick-btn" onclick="setQuestion('What color is it?')">什么颜色</button>
-                        <button class="quick-btn" onclick="setQuestion('How many people?')">多少人</button>
-                        <button class="quick-btn" onclick="setQuestion('Where is this?')">在哪里</button>
+                        <button class="quick-btn" onclick="setQuestion('图中有什么？')">图中有什么</button>
+                        <button class="quick-btn" onclick="setQuestion('这是什么颜色？')">什么颜色</button>
+                        <button class="quick-btn" onclick="setQuestion('有多少人？')">多少人</button>
+                        <button class="quick-btn" onclick="setQuestion('他们在做什么？')">在做什么</button>
+                        <button class="quick-btn" onclick="setQuestion('这是在哪里？')">在哪里</button>
                     </div>
                 </div>
                 
@@ -479,17 +516,28 @@ HTML_TEMPLATE = """
         
         function displayResult(data) {
             const container = document.getElementById('resultContainer');
-            const confidence = (data.score * 100).toFixed(1);
             
             let html = '<h3 style="color: #c2185b; margin-bottom: 20px; text-align: center;">✨ 回答结果</h3>';
             
             html += '<div class="answer-box">';
             html += `<div class="question-text">❓ ${data.question}</div>`;
+            
+            // 如果有翻译信息，显示翻译后的问题
+            if (data.translated_question) {
+                html += `<div style="color: #888; font-size: 0.9em; margin: 5px 0;">🔄 翻译: ${data.translated_question}</div>`;
+            }
+            
             html += `<div class="answer-text">💡 ${data.answer}</div>`;
-            html += `<div class="confidence">置信度: ${confidence}%</div>`;
-            html += '<div class="confidence-bar">';
-            html += `<div class="confidence-fill" style="width: ${confidence}%"></div>`;
-            html += '</div>';
+            
+            // 只有当score存在时才显示置信度
+            if (data.score !== undefined && data.score !== null) {
+                const confidence = (data.score * 100).toFixed(1);
+                html += `<div class="confidence">置信度: ${confidence}%</div>`;
+                html += '<div class="confidence-bar">';
+                html += `<div class="confidence-fill" style="width: ${confidence}%"></div>`;
+                html += '</div>';
+            }
+            
             html += '</div>';
             
             container.innerHTML = html;
@@ -531,14 +579,86 @@ def ask():
         
         image = Image.open(file.stream).convert('RGB')
         
-        result = vqa(image=image, question=question)
+        # 检测问题语言并翻译
+        original_question = question
+        question_lang = 'en'  # 默认英文
+        translated_question = None
         
-        return jsonify({
+        # 首先检查是否有直接映射
+        if question in QUESTION_MAPPING:
+            translated_question = QUESTION_MAPPING[question]
+            question = translated_question
+            question_lang = 'zh'
+            print(f"使用预设映射: {original_question} -> {translated_question}")
+        elif TRANSLATOR_AVAILABLE:
+            try:
+                # 检测语言
+                detected = translator.detect(question)
+                question_lang = detected.lang
+                print(f"检测到语言: {question_lang}")
+                
+                # 如果是中文，翻译成英文
+                if question_lang in ['zh-cn', 'zh-tw', 'zh']:
+                    print(f"原始中文问题: {question}")
+                    translated = translator.translate(question, src='auto', dest='en')
+                    translated_question = translated.text
+                    print(f"翻译为英文: {translated_question}")
+                    question = translated_question
+            except Exception as e:
+                print(f"翻译失败，使用原始问题: {e}")
+                question_lang = 'en'  # 翻译失败时假设是英文
+        
+        # 调用VQA模型
+        print(f"调用VQA模型，问题: {question}")
+        result = vqa(image=image, question=question)
+        print(f"VQA模型返回: {result}")
+        
+        # VQA模型返回格式：[{'generated_text': '答案'}] 或 [{'answer': '答案', 'score': 分数}]
+        # 需要兼容不同的返回格式
+        if isinstance(result, list) and len(result) > 0:
+            answer_dict = result[0]
+            
+            # 提取答案
+            if 'generated_text' in answer_dict:
+                answer = answer_dict['generated_text']
+                score = None  # 生成式模型没有score
+            elif 'answer' in answer_dict:
+                answer = answer_dict['answer']
+                score = answer_dict.get('score', None)
+            else:
+                answer = str(answer_dict)
+                score = None
+        else:
+            answer = str(result)
+            score = None
+        
+        print(f"提取的答案: {answer}, 置信度: {score}")
+        
+        # 如果原始问题是中文，将答案翻译回中文
+        if TRANSLATOR_AVAILABLE and question_lang in ['zh-cn', 'zh-tw', 'zh']:
+            try:
+                print(f"英文答案: {answer}")
+                translated_answer = translator.translate(answer, src='en', dest='zh-cn')
+                answer = translated_answer.text
+                print(f"翻译为中文: {answer}")
+            except Exception as e:
+                print(f"答案翻译失败，返回英文答案: {e}")
+        
+        response = {
             'success': True,
-            'question': question,
-            'answer': result[0]['answer'],
-            'score': float(result[0]['score'])
-        })
+            'question': original_question,  # 返回原始问题
+            'answer': answer
+        }
+        
+        # 如果进行了翻译，添加翻译信息
+        if translated_question:
+            response['translated_question'] = translated_question
+        
+        # 只有当score存在时才添加
+        if score is not None:
+            response['score'] = float(score)
+        
+        return jsonify(response)
         
     except Exception as e:
         import traceback

@@ -7,6 +7,8 @@
 import os
 os.environ['HF_HOME'] = r'D:\transformers训练\transformers-main\预训练模型下载处'
 os.environ['TRANSFORMERS_CACHE'] = r'D:\transformers训练\transformers-main\预训练模型下载处'
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'  # 使用国内镜像
+# 不设置TESSDATA_PREFIX，因为路径包含中文会导致Tesseract无法识别
 
 from flask import Flask, request, jsonify, render_template_string, send_file
 from transformers import pipeline
@@ -14,6 +16,59 @@ from PIL import Image
 import base64
 import io
 import tempfile
+
+# 配置 Tesseract-OCR 并修复编码问题
+try:
+    import pytesseract
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    
+    # Monkey patch pytesseract 修复Windows中文编码问题
+    import pytesseract.pytesseract as pyt
+    
+    # 修改get_errors函数，使其能处理GBK编码
+    original_get_errors = pyt.get_errors
+    
+    def patched_get_errors(error_bytes):
+        """修复编码错误 - 尝试多种编码"""
+        if isinstance(error_bytes, bytes):
+            # 尝试多种编码
+            for encoding in ['utf-8', 'gbk', 'gb2312', 'cp936', 'latin1']:
+                try:
+                    return error_bytes.decode(encoding)
+                except (UnicodeDecodeError, AttributeError):
+                    continue
+            # 所有编码都失败，使用ignore模式
+            return error_bytes.decode('utf-8', errors='ignore')
+        return error_bytes
+    
+    pyt.get_errors = patched_get_errors
+    
+    # 同时修改run_and_get_output，默认使用中英文双语言
+    original_run_and_get_output = pyt.run_and_get_output
+    
+    def patched_run_and_get_output(image, extension, lang=None, config='', nice=0, timeout=0, return_bytes=False):
+        """默认使用中英文双语言（语言包已安装到Tesseract默认目录）"""
+        # 如果没有指定语言或只指定了英文，使用中英文双语言
+        if lang is None or lang == 'eng':
+            lang = 'chi_sim+eng'  # 中文+英文
+        
+        try:
+            return original_run_and_get_output(image, extension, lang, config, nice, timeout, return_bytes)
+        except Exception as e:
+            # 如果中文语言包失败，降级到只用英文
+            if 'chi_sim' in str(e) and lang == 'chi_sim+eng':
+                print(f"⚠️ 中文语言包加载失败，降级到只用英文: {e}")
+                lang = 'eng'
+                return original_run_and_get_output(image, extension, lang, config, nice, timeout, return_bytes)
+            raise
+    
+    pyt.run_and_get_output = patched_run_and_get_output
+    
+    print("✅ pytesseract编码补丁已应用（支持中英文双语言）")
+except ImportError:
+    print("⚠️ pytesseract未安装")
+except Exception as e:
+    print(f"⚠️ pytesseract补丁应用失败: {e}")
 
 # 导入PDF和Word处理库
 try:
@@ -32,11 +87,18 @@ except ImportError:
 
 try:
     from docx import Document
-    import pythoncom
     DOCX_READ_SUPPORT = True
+    print("✅ python-docx 已安装，Word读取支持已启用")
 except ImportError:
     DOCX_READ_SUPPORT = False
-    print("⚠️  未安装 python-docx，Word读取支持不可用。安装: pip install python-docx")
+    print("⚠️  未安装 python-docx，Word读取支持不可用。")
+    print("   安装命令: pip install python-docx")
+
+try:
+    import pythoncom
+    PYTHONCOM_SUPPORT = True
+except ImportError:
+    PYTHONCOM_SUPPORT = False
 
 app = Flask(__name__)
 
@@ -46,6 +108,31 @@ BACKGROUND_PATH = os.path.join(CURRENT_DIR, '背景.png')
 print("=" * 70)
 print("📄 文档理解 Web 服务 - 文档解析师")
 print("=" * 70)
+
+# 检查 Tesseract-OCR
+print("\n🔍 检查 Tesseract-OCR...")
+try:
+    import pytesseract
+    # 配置 Tesseract 路径
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    
+    # 检查语言数据文件
+    tessdata_path = r'D:\transformers训练\transformers-main\预训练模型下载处'
+    eng_data = os.path.join(tessdata_path, 'eng.traineddata')
+    
+    if not os.path.exists(eng_data):
+        print("❌ Tesseract语言数据文件缺失！")
+        print(f"   需要下载 eng.traineddata 到 {tessdata_path}")
+        TESSERACT_AVAILABLE = False
+    else:
+        print(f"✅ 语言数据文件已找到: {eng_data}")
+        # 尝试运行 tesseract
+        pytesseract.get_tesseract_version()
+        print("✅ Tesseract-OCR 已安装并配置")
+        TESSERACT_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️  Tesseract-OCR 配置失败: {e}")
+    TESSERACT_AVAILABLE = False
 
 print("\n📚 正在加载文档问答模型...")
 doc_qa = pipeline("document-question-answering", model="impira/layoutlm-document-qa")
@@ -360,9 +447,16 @@ HTML_TEMPLATE = """
         }
         
         .info-box p {
-            color: #303f9f;
+            color: #1a237e;
             line-height: 1.8;
             margin-bottom: 8px;
+            font-size: 1.1em;
+            font-weight: 500;
+        }
+        
+        .info-box strong {
+            color: #0d47a1;
+            font-weight: 700;
         }
     </style>
 </head>
@@ -383,13 +477,18 @@ HTML_TEMPLATE = """
                 <img id="previewImage" class="preview-image" alt="文档预览">
                 
                 <div class="question-area">
-                    <label>❓ 向文档提问：</label>
-                    <input type="text" id="questionInput" placeholder="例如：What is the total amount?">
+                    <label>❓ 向文档提问（支持中英文）：</label>
+                    <input type="text" id="questionInput" placeholder="例如：总金额是多少？或 What is the total amount?">
                     <div class="quick-questions">
-                        <button class="quick-btn" onclick="setQuestion('What is the invoice number?')">发票号</button>
-                        <button class="quick-btn" onclick="setQuestion('What is the date?')">日期</button>
-                        <button class="quick-btn" onclick="setQuestion('What is the total amount?')">总金额</button>
-                        <button class="quick-btn" onclick="setQuestion('Who is the vendor?')">供应商</button>
+                        <button class="quick-btn" onclick="setQuestion('发票号是多少？')">发票号</button>
+                        <button class="quick-btn" onclick="setQuestion('日期是什么？')">日期</button>
+                        <button class="quick-btn" onclick="setQuestion('总金额是多少？')">总金额</button>
+                        <button class="quick-btn" onclick="setQuestion('供应商是谁？')">供应商</button>
+                        <button class="quick-btn" onclick="setQuestion('What is the name?')">姓名</button>
+                        <button class="quick-btn" onclick="setQuestion('What is the phone number?')">电话</button>
+                        <button class="quick-btn" onclick="setQuestion('What is the email?')">邮箱</button>
+                        <button class="quick-btn" onclick="setQuestion('What is the invoice number?')">Invoice#</button>
+                        <button class="quick-btn" onclick="setQuestion('What is the total amount?')">Total</button>
                     </div>
                 </div>
                 
@@ -410,8 +509,19 @@ HTML_TEMPLATE = """
         <div class="info-box">
             <p><strong>🤖 模型：</strong>impira/layoutlm-document-qa</p>
             <p><strong>💡 功能：</strong>OCR文字识别 + 布局分析 + 信息提取</p>
-            <p><strong>📋 支持格式：</strong>PDF、Word(.docx)、图片(JPG/PNG/BMP)</p>
-            <p><strong>📋 应用：</strong>发票处理、合同分析、表单填充、文档自动化</p>
+            <p><strong>✅ 推荐格式：</strong>图片（JPG/PNG/BMP）- 效果最好！</p>
+            <p><strong>📋 其他格式：</strong>PDF（需转换）、Word（建议截图后上传）</p>
+            <p><strong>🌏 语言支持：</strong>支持中文和英文提问（推荐使用英文提问效果更好）</p>
+            <p><strong>💡 使用提示：</strong>Word文档请先截图保存为图片，然后上传图片文件</p>
+            <p><strong>📸 图片要求：</strong></p>
+            <p style="margin-left: 20px;">• 分辨率：建议至少 1000x1000 像素</p>
+            <p style="margin-left: 20px;">• 清晰度：文字清晰可读，避免模糊</p>
+            <p style="margin-left: 20px;">• 对比度：黑色文字 + 白色背景效果最好</p>
+            <p style="margin-left: 20px;">• 布局：简单的表格/表单效果最好</p>
+            <p><strong>❓ 提问技巧：</strong></p>
+            <p style="margin-left: 20px;">• 使用英文提问准确度更高</p>
+            <p style="margin-left: 20px;">• 问题要具体明确，如 "What is the invoice number?"</p>
+            <p style="margin-left: 20px;">• 避免复杂的复合问题</p>
         </div>
     </div>
 
@@ -653,44 +763,138 @@ def ask():
                 os.unlink(pdf_path)
                 
         elif filename.endswith(('.doc', '.docx')):
-            # 处理Word文档
+            # 处理Word文档 - 将每页转换为图片
             if not DOCX_READ_SUPPORT:
-                return jsonify({'success': False, 'error': 'Word支持未启用，请安装 python-docx'})
-            
-            # 保存临时Word文件
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_docx:
-                file.save(tmp_docx.name)
-                docx_path = tmp_docx.name
+                return jsonify({
+                    'success': False, 
+                    'error': 'Word支持未启用，请安装 python-docx\n安装命令: pip install python-docx'
+                })
             
             try:
-                # 方法1: 如果有docx2pdf，转换为PDF再转图片
-                if PDF_SUPPORT and DOCX_SUPPORT:
-                    pdf_path = docx_path.replace('.docx', '.pdf')
+                # 方法1：使用docx2pdf + pdf2image（如果都安装了）
+                if DOCX_SUPPORT and PDF_SUPPORT:
+                    # 保存临时Word文件
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_docx:
+                        file.save(tmp_docx.name)
+                        docx_path = tmp_docx.name
+                    
                     try:
-                        pythoncom.CoInitialize()
+                        # 转换为PDF
+                        pdf_path = docx_path.replace('.docx', '.pdf')
                         docx_to_pdf(docx_path, pdf_path)
+                        
+                        # 转换PDF第一页为图片
                         images = convert_from_path(pdf_path, first_page=1, last_page=1)
-                        image = images[0].convert('RGB')
-                        os.unlink(pdf_path)
-                    except Exception as e:
-                        print(f"Word转换失败: {e}")
-                        return jsonify({'success': False, 'error': f'Word文档转换失败: {str(e)}'})
+                        if images:
+                            image = images[0].convert('RGB')
+                        else:
+                            raise Exception("PDF转换失败")
                     finally:
-                        pythoncom.CoUninitialize()
+                        if os.path.exists(docx_path):
+                            os.unlink(docx_path)
+                        if os.path.exists(pdf_path):
+                            os.unlink(pdf_path)
+                
+                # 方法2：使用python-docx读取文本，创建简单图片
                 else:
-                    # 方法2: 提取文本（简化方案）
-                    doc = Document(docx_path)
-                    text = '\n'.join([para.text for para in doc.paragraphs if para.text.strip()])
-                    return jsonify({'success': False, 'error': 'Word文档需要转换为图片格式，请先将文档导出为PDF或截图'})
-            finally:
-                os.unlink(docx_path)
+                    from docx import Document
+                    from PIL import Image, ImageDraw, ImageFont
+                    
+                    # 读取Word文档
+                    doc = Document(file.stream)
+                    
+                    # 提取所有文本
+                    full_text = []
+                    for para in doc.paragraphs:
+                        if para.text.strip():
+                            full_text.append(para.text)
+                    
+                    # 提取表格内容
+                    for table in doc.tables:
+                        for row in table.rows:
+                            row_text = ' | '.join([cell.text.strip() for cell in row.cells if cell.text.strip()])
+                            if row_text:
+                                full_text.append(row_text)
+                    
+                    if not full_text:
+                        return jsonify({
+                            'success': False,
+                            'error': '⚠️ Word文档中没有找到文本内容'
+                        })
+                    
+                    # 创建文本图片
+                    text_content = '\n'.join(full_text[:50])  # 最多50行
+                    
+                    # 创建白色背景图片
+                    img_width = 1200
+                    img_height = max(800, len(full_text[:50]) * 30 + 100)
+                    image = Image.new('RGB', (img_width, img_height), 'white')
+                    draw = ImageDraw.Draw(image)
+                    
+                    # 使用默认字体
+                    try:
+                        font = ImageFont.truetype("arial.ttf", 20)
+                    except:
+                        font = ImageFont.load_default()
+                    
+                    # 绘制文本
+                    y_position = 50
+                    for line in full_text[:50]:
+                        # 处理长行
+                        if len(line) > 80:
+                            line = line[:80] + '...'
+                        draw.text((50, y_position), line, fill='black', font=font)
+                        y_position += 30
+                    
+                    print(f"✅ Word文档已转换为图片（{len(full_text)}行文本）")
+                    
+            except Exception as e:
+                print(f"Word文档处理失败: {e}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({
+                    'success': False,
+                    'error': f'⚠️ Word文档处理失败\n\n错误：{str(e)}\n\n💡 建议：\n1. 将Word文档另存为PDF\n2. 或截图保存为图片后上传'
+                })
                 
         else:
             # 处理图片文件
             image = Image.open(file.stream).convert('RGB')
         
-        # 执行文档问答
-        result = doc_qa(image=image, question=question)
+        # 执行文档问答 - 完全绕过pytesseract，直接传图片给模型
+        print("📄 准备进行文档问答...")
+        
+        # 策略：直接传图片给模型，让模型使用内置OCR（LayoutLM模型支持）
+        # 不再尝试手动OCR，避免编码问题
+        try:
+            print("直接使用模型进行文档问答（模型内置OCR）...")
+            # 直接传图片，不提供word_boxes，让模型自己处理
+            # 注意：这里不能传word_boxes参数，否则模型会尝试调用pytesseract
+            result = doc_qa(image=image, question=question)
+                
+        except (UnicodeDecodeError, ValueError) as e:
+            print(f"模型内置OCR编码错误: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'error': '⚠️ OCR识别失败（编码问题）\n\n这是Tesseract在Windows上的已知问题。\n\n💡 解决方案：\n1. 下载中文语言包 chi_sim.traineddata\n2. 放到：D:\\transformers训练\\transformers-main\\预训练模型下载处\n3. 或使用纯英文文档\n\n下载地址：\nhttps://github.com/tesseract-ocr/tessdata/raw/main/chi_sim.traineddata'
+            })
+        except Exception as e:
+            print(f"文档问答失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'error': f'⚠️ 文档分析失败\n\n错误信息：{str(e)}\n\n💡 建议：\n1. 使用JPG或PNG格式\n2. 确保图片包含清晰的文字\n3. 尝试使用英文文档'
+            })
+        
+        # 检查结果
+        if not result or len(result) == 0:
+            return jsonify({
+                'success': False,
+                'error': '模型未能从图片中找到答案。请确保：\n1. 图片清晰，文字可读\n2. 问题与图片内容相关\n3. 尝试使用英文提问'
+            })
         
         return jsonify({
             'success': True,
@@ -704,7 +908,7 @@ def ask():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': f'分析失败: {str(e)}'
         })
 
 if __name__ == '__main__':

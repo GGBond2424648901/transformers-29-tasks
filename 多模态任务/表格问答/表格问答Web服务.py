@@ -12,6 +12,56 @@ from flask import Flask, request, jsonify, send_file
 from transformers import pipeline
 import pandas as pd
 import base64
+import numpy as np
+
+# Monkey patch: 修复TAPAS tokenizer与pandas Arrow backend的兼容性问题
+def patch_tapas_tokenizer():
+    """修复TAPAS tokenizer处理DataFrame时的类型问题"""
+    try:
+        from transformers.models.tapas import tokenization_tapas
+        
+        # Patch 1: tokenize方法
+        original_tokenize = tokenization_tapas.TapasTokenizer.tokenize
+        
+        def patched_tokenize(self, text, **kwargs):
+            if not isinstance(text, str):
+                text = str(text)
+            return original_tokenize(self, text, **kwargs)
+        
+        tokenization_tapas.TapasTokenizer.tokenize = patched_tokenize
+        
+        # Patch 2: add_numeric_table_values函数 - 这是关键！
+        original_add_numeric = tokenization_tapas.add_numeric_table_values
+        
+        def patched_add_numeric_table_values(table):
+            # 先转换DataFrame为纯Python对象，避免Arrow backend
+            import pandas as pd
+            if isinstance(table, pd.DataFrame):
+                # 重置索引，确保使用默认的RangeIndex
+                table = table.reset_index(drop=True)
+                # 创建一个新的DataFrame，使用Python原生类型
+                new_data = {}
+                for col in table.columns:
+                    # 转换为列表，然后转为字符串
+                    col_values = []
+                    for val in table[col]:
+                        col_values.append(str(val))
+                    new_data[str(col)] = col_values
+                
+                # 用object dtype创建新DataFrame
+                table = pd.DataFrame(new_data, dtype=object)
+            
+            return original_add_numeric(table)
+        
+        tokenization_tapas.add_numeric_table_values = patched_add_numeric_table_values
+        
+        print("✅ TAPAS tokenizer补丁已应用（包含DataFrame类型修复）")
+    except Exception as e:
+        print(f"⚠️  TAPAS tokenizer补丁应用失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+patch_tapas_tokenizer()
 
 BACKGROUND_PATH = r'背景.png'
 
@@ -295,6 +345,13 @@ HTML_TEMPLATE = f"""
         <div class="input-area">
             <div class="table-input">
                 <label>📋 输入表格数据（CSV格式）：</label>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <input type="file" id="fileUpload" accept=".csv" style="display: none;">
+                    <button class="quick-btn" onclick="document.getElementById('fileUpload').click()" style="padding: 10px 20px;">
+                        📁 上传CSV文件
+                    </button>
+                    <span id="fileName" style="color: #00838f; line-height: 40px;"></span>
+                </div>
                 <textarea id="tableInput" placeholder="姓名,年龄,部门,工资&#10;张三,25,技术部,8000&#10;李四,30,销售部,9000&#10;王五,28,技术部,8500"></textarea>
                 <div class="hint">
                     💡 提示：第一行为表头，使用逗号分隔列
@@ -309,12 +366,12 @@ HTML_TEMPLATE = f"""
             
             <div class="question-input">
                 <label>❓ 提出问题：</label>
-                <input type="text" id="questionInput" placeholder="例如：技术部有多少人？">
+                <input type="text" id="questionInput" placeholder="例如：What is the average salary? 或 How many employees are there?">
                 <div class="quick-questions">
-                    <button class="quick-btn" onclick="setQuestion('How many people?')">人数</button>
-                    <button class="quick-btn" onclick="setQuestion('What is the average?')">平均值</button>
-                    <button class="quick-btn" onclick="setQuestion('Who has the highest?')">最高</button>
-                    <button class="quick-btn" onclick="setQuestion('What is the total?')">总和</button>
+                    <button class="quick-btn" onclick="setQuestion('How many employees are there?')">有多少人</button>
+                    <button class="quick-btn" onclick="setQuestion('What is the average salary?')">平均工资</button>
+                    <button class="quick-btn" onclick="setQuestion('Who has the highest salary?')">最高工资</button>
+                    <button class="quick-btn" onclick="setQuestion('What is the total salary?')">工资总和</button>
                 </div>
             </div>
             
@@ -347,6 +404,48 @@ HTML_TEMPLATE = f"""
         }}
         
         setInterval(createFallingItem, 150);
+        
+        // 文件上传处理
+        document.getElementById('fileUpload').addEventListener('change', async function(e) {{
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            document.getElementById('fileName').textContent = '正在读取: ' + file.name;
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {{
+                const response = await fetch('/upload', {{
+                    method: 'POST',
+                    body: formData
+                }});
+                
+                const data = await response.json();
+                
+                if (data.success) {{
+                    const textarea = document.getElementById('tableInput');
+                    const originalHeader = textarea.value.split('\\n')[0] || '';
+                    textarea.value = data.content;
+                    const newHeader = data.content.split('\\n')[0] || '';
+                    
+                    // 检查是否进行了列名翻译
+                    if (originalHeader && newHeader && originalHeader !== newHeader && 
+                        originalHeader.match(/[\u4e00-\u9fff]/)) {{
+                        document.getElementById('fileName').textContent = '✅ 已加载并自动翻译列名: ' + file.name;
+                        document.getElementById('fileName').style.fontWeight = 'bold';
+                    }} else {{
+                        document.getElementById('fileName').textContent = '✅ 已加载: ' + file.name;
+                    }}
+                }} else {{
+                    alert('文件读取失败: ' + data.error);
+                    document.getElementById('fileName').textContent = '';
+                }}
+            }} catch (error) {{
+                alert('上传失败: ' + error.message);
+                document.getElementById('fileName').textContent = '';
+            }}
+        }});
         
         function setQuestion(question) {{
             document.getElementById('questionInput').value = question;
@@ -388,7 +487,24 @@ HTML_TEMPLATE = f"""
                 const data = await response.json();
                 
                 if (data.error) {{
-                    resultDiv.innerHTML = `<p style="text-align: center; color: #d32f2f;">❌ ${{data.error}}</p>`;
+                    let errorHtml = `<p style="text-align: center; color: #d32f2f; font-weight: bold;">❌ ${{data.error}}</p>`;
+                    
+                    // 如果有详细信息和解决方案，显示它们
+                    if (data.details) {{
+                        errorHtml += `<p style="text-align: center; color: #666; margin-top: 10px;">${{data.details}}</p>`;
+                    }}
+                    
+                    if (data.solutions && data.solutions.length > 0) {{
+                        errorHtml += '<div style="background: #fff3cd; padding: 15px; border-radius: 10px; margin-top: 15px; text-align: left;">';
+                        errorHtml += '<h4 style="color: #856404; margin-bottom: 10px;">💡 解决方案：</h4>';
+                        errorHtml += '<ul style="color: #856404; margin-left: 20px;">';
+                        data.solutions.forEach(solution => {{
+                            errorHtml += `<li style="margin: 5px 0;">${{solution}}</li>`;
+                        }});
+                        errorHtml += '</ul></div>';
+                    }}
+                    
+                    resultDiv.innerHTML = errorHtml;
                 }} else {{
                     displayResult(data);
                 }}
@@ -439,6 +555,82 @@ def background():
 def index():
     return HTML_TEMPLATE
 
+@app.route('/upload', methods=['POST'])
+def upload():
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': '没有上传文件'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': '文件名为空'}), 400
+        
+        # 读取CSV文件
+        content = file.read().decode('utf-8')
+        
+        # 尝试自动翻译中文列名
+        lines = content.strip().split('\n')
+        if lines:
+            header = lines[0]
+            # 常见中文列名映射
+            column_mapping = {
+                '姓名': 'Name',
+                '名字': 'Name',
+                '年龄': 'Age',
+                '部门': 'Department',
+                '工资': 'Salary',
+                '薪资': 'Salary',
+                '薪水': 'Salary',
+                '职位': 'Position',
+                '入职日期': 'Join_Date',
+                '入职时间': 'Join_Date',
+                '性别': 'Gender',
+                '电话': 'Phone',
+                '邮箱': 'Email',
+                '地址': 'Address',
+                '城市': 'City',
+                '省份': 'Province',
+                '国家': 'Country',
+                '产品': 'Product',
+                '价格': 'Price',
+                '数量': 'Quantity',
+                '总额': 'Total',
+                '收入': 'Revenue',
+                '月份': 'Month',
+                '日期': 'Date',
+                '时间': 'Time',
+                '类别': 'Category',
+                '状态': 'Status',
+                '备注': 'Note',
+            }
+            
+            # 检查是否有中文列名
+            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in header)
+            
+            if has_chinese:
+                # 翻译列名
+                columns = header.split(',')
+                translated_columns = []
+                for col in columns:
+                    col = col.strip()
+                    if col in column_mapping:
+                        translated_columns.append(column_mapping[col])
+                    else:
+                        # 如果没有映射，保持原样
+                        translated_columns.append(col)
+                
+                # 重建CSV内容
+                new_header = ','.join(translated_columns)
+                lines[0] = new_header
+                content = '\n'.join(lines)
+                
+                print(f"✅ 自动翻译列名: {header} -> {new_header}")
+        
+        return jsonify({'success': True, 'content': content})
+        
+    except Exception as e:
+        return jsonify({'error': f'文件读取失败: {str(e)}'}), 500
+
 @app.route('/ask', methods=['POST'])
 def ask():
     try:
@@ -449,19 +641,100 @@ def ask():
         if not table_text or not question:
             return jsonify({'error': '请提供表格和问题'}), 400
         
-        # 解析CSV
+        # 解析CSV - 使用最简单的方法
         from io import StringIO
-        df = pd.read_csv(StringIO(table_text))
+        
+        # 直接读取为object类型，然后立即转换所有值为字符串
+        df = pd.read_csv(StringIO(table_text), dtype=str, keep_default_na=False)
+        
+        if df.empty:
+            return jsonify({'error': '表格数据为空，请检查输入格式'}), 400
+        
+        # 确保索引是RangeIndex
+        df = df.reset_index(drop=True)
+        
+        print(f"解析的表格:\n{df}")
+        print(f"表格shape: {df.shape}")
+        print(f"表格columns: {list(df.columns)}")
+        print(f"表格index: {df.index}")
+        print(f"表格数据类型:\n{df.dtypes}")
+        print(f"问题: {question}")
         
         # 查询
         result = table_qa(table=df, query=question)
+        print(f"查询结果: {result}")
+        
+        # 处理答案，让它更友好
+        answer = result['answer']
+        aggregator = result.get('aggregator', 'NONE')
+        cells = result.get('cells', [])
+        coordinates = result.get('coordinates', [])
+        
+        # 根据聚合类型优化答案显示
+        if aggregator == 'COUNT':
+            # 统计数量：显示数字和名单
+            if len(cells) <= 10:
+                answer = f"{len(cells)} 人：{', '.join(cells)}"
+            else:
+                answer = f"{len(cells)} 人：{', '.join(cells[:10])} ..."
+        elif aggregator == 'SUM':
+            # 求和：尝试计算数值总和
+            try:
+                # 检查是否是数字列
+                numeric_cells = []
+                for c in cells:
+                    c_clean = str(c).replace(',', '').replace(' ', '')
+                    if c_clean.replace('.', '').replace('-', '').isdigit():
+                        numeric_cells.append(float(c_clean))
+                
+                if numeric_cells:
+                    # 是数字，计算总和
+                    total = sum(numeric_cells)
+                    answer = f"{total:,.2f}"
+                else:
+                    # 不是数字（比如姓名），显示数量和名单
+                    if len(cells) <= 10:
+                        answer = f"{len(cells)} 人：{', '.join(cells)}"
+                    else:
+                        answer = f"{len(cells)} 人：{', '.join(cells[:10])} ..."
+            except:
+                # 出错时显示数量
+                if len(cells) <= 10:
+                    answer = f"{len(cells)} 项：{', '.join(cells)}"
+                else:
+                    answer = f"{len(cells)} 项"
+        elif aggregator == 'AVERAGE':
+            # 平均值：计算数值平均
+            try:
+                numeric_cells = []
+                for c in cells:
+                    c_clean = str(c).replace(',', '').replace(' ', '')
+                    if c_clean.replace('.', '').replace('-', '').isdigit():
+                        numeric_cells.append(float(c_clean))
+                
+                if numeric_cells:
+                    avg = sum(numeric_cells) / len(numeric_cells)
+                    answer = f"{avg:,.2f}"
+                else:
+                    answer = str(cells[0]) if cells else answer
+            except:
+                answer = str(cells[0]) if cells else answer
+        elif aggregator == 'NONE':
+            # 无聚合：直接显示答案（通常是单个值）
+            if isinstance(answer, str) and answer.startswith('NONE > '):
+                answer = answer.replace('NONE > ', '')
+            # 如果答案太长，只显示前几个
+            if len(cells) > 5:
+                answer = ', '.join(cells[:5]) + f' ... (共{len(cells)}项)'
+            elif cells:
+                answer = ', '.join(cells)
         
         # 生成表格HTML
         table_html = df.to_html(index=False, classes='data-table')
         
         return jsonify({
             'question': question,
-            'answer': result['answer'],
+            'answer': answer,
             'table_html': table_html
         })
         
@@ -469,6 +742,21 @@ def ask():
         import traceback
         error_details = traceback.format_exc()
         print(f"错误详情: {error_details}")
+        
+        # 检查是否是已知的pandas Arrow backend问题
+        error_msg = str(e)
+        if "iteration over a 0-d array" in error_msg or "KeyError: 0" in error_details:
+            return jsonify({
+                'error': '表格解析失败：pandas Arrow backend兼容性问题',
+                'details': '这是pandas 2.x与TAPAS模型的已知兼容性问题。',
+                'solutions': [
+                    '1. 使用命令行脚本：python 表格问答示例.py',
+                    '2. 降级pandas版本：pip install "pandas<2.0.0"',
+                    '3. 使用英文表格数据可能效果更好',
+                    '4. 查看"已知问题说明.md"了解详情'
+                ]
+            }), 500
+        
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
