@@ -1,0 +1,58 @@
+{
+  "image_id": 5,
+  "file_name": "val_0005.jpg",
+  "width": 640,
+  "height": 480,
+  "annotations": [
+    {
+      "bbox": [
+        72,
+        239,
+        64,
+        64
+      ],
+      "category_id": 1,
+      "area": 4096
+    },
+    {
+      "bbox": [
+        280,
+        337,
+        72,
+        72
+      ],
+      "category_id": 3,
+      "area": 5184
+    },
+    {
+      "bbox": [
+        415,
+        91,
+        38,
+        38
+      ],
+      "category_id": 1,
+      "area": 1444
+    },
+    {
+      "bbox": [
+        75,
+        279,
+        32,
+        32
+      ],
+      "category_id": 1,
+      "area": 1024
+    },
+    {
+      "bbox": [
+        158,
+        308,
+        36,
+        36
+      ],
+      "category_id": 3,
+      "area": 1296
+    }
+  ]
+}

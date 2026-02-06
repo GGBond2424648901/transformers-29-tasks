@@ -1,0 +1,58 @@
+{
+  "image_id": 17,
+  "file_name": "train_0017.jpg",
+  "width": 640,
+  "height": 480,
+  "annotations": [
+    {
+      "bbox": [
+        241,
+        182,
+        39,
+        39
+      ],
+      "category_id": 2,
+      "area": 1521
+    },
+    {
+      "bbox": [
+        453,
+        389,
+        45,
+        45
+      ],
+      "category_id": 2,
+      "area": 2025
+    },
+    {
+      "bbox": [
+        253,
+        90,
+        74,
+        74
+      ],
+      "category_id": 3,
+      "area": 5476
+    },
+    {
+      "bbox": [
+        293,
+        304,
+        43,
+        43
+      ],
+      "category_id": 2,
+      "area": 1849
+    },
+    {
+      "bbox": [
+        139,
+        314,
+        61,
+        61
+      ],
+      "category_id": 2,
+      "area": 3721
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "image_id": 4,
+  "file_name": "val_0004.jpg",
+  "width": 640,
+  "height": 480,
+  "annotations": [
+    {
+      "bbox": [
+        91,
+        50,
+        49,
+        49
+      ],
+      "category_id": 2,
+      "area": 2401
+    },
+    {
+      "bbox": [
+        245,
+        85,
+        48,
+        48
+      ],
+      "category_id": 1,
+      "area": 2304
+    },
+    {
+      "bbox": [
+        408,
+        139,
+        51,
+        51
+      ],
+      "category_id": 3,
+      "area": 2601
+    }
+  ]
+}

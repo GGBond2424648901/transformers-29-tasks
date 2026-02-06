@@ -1,0 +1,48 @@
+{
+  "image_id": 15,
+  "file_name": "train_0015.jpg",
+  "width": 640,
+  "height": 480,
+  "annotations": [
+    {
+      "bbox": [
+        295,
+        234,
+        41,
+        41
+      ],
+      "category_id": 1,
+      "area": 1681
+    },
+    {
+      "bbox": [
+        209,
+        82,
+        61,
+        61
+      ],
+      "category_id": 3,
+      "area": 3721
+    },
+    {
+      "bbox": [
+        503,
+        167,
+        54,
+        54
+      ],
+      "category_id": 1,
+      "area": 2916
+    },
+    {
+      "bbox": [
+        183,
+        100,
+        70,
+        70
+      ],
+      "category_id": 3,
+      "area": 4900
+    }
+  ]
+}
